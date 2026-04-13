@@ -1,0 +1,11 @@
+# Web server
+flask>=3.0.0
+
+# Desktop window (Windows .exe build only)
+# pywebview>=4.4.0
+
+# Build tool (uncomment to compile .exe)
+# pyinstaller>=6.0.0
+
+# NOTE: openpyxl is no longer required.
+# The app now uses plain CSV files in the data/ folder.

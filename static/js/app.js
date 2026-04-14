@@ -23,6 +23,9 @@ let argonPurging = false;
 // Heat info taps (from heat info card buttons)
 let heatTaps = 1;
 
+// Trim log state
+let allTrimRecords = [];
+
 const ELEMENTS    = ['C','Si','Mn','S','P','Cr','Ni','Mo','Cu'];
 const ALLOY_CODES = ['GRAF','FESI','HCMN','LCMN','HCCR','LCCR','NI','FEMO','CU'];
 
@@ -130,6 +133,7 @@ function showSection(id, btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   if (id === 'heat-log')         loadHeatLog();
+  if (id === 'trim-log')         loadTrimLog();
   if (id === 'material-manager') { mmRenderTable(allMaterials); }
   if (id === 'grade-manager')    { gmRenderTable(allGrades); }
 }
@@ -742,7 +746,7 @@ async function printTrimReport() {
     });
     const d = await res.json();
     if (d.token) {
-      window.open('/trim_report?token=' + d.token, '_blank');
+      window.open('/trim_report?token=' + d.token + '&autoprint=1', '_blank');
     } else {
       showToast('Failed to prepare trim report.', 'error');
     }
@@ -800,53 +804,99 @@ async function loadHeatLog() {
   allHeats   = await res.json();
   renderHeatTable(allHeats);
   updateFurnaceMonitor(allHeats);
+  // Attach ONE persistent click listener to the tbody (not inside renderHeatTable)
+  const tbody = document.getElementById('heats-body');
+  if (tbody && !tbody._heatClickBound) {
+    tbody._heatClickBound = true;
+    tbody.addEventListener('click', function(e) {
+      const row = e.target.closest('tr[data-heatno]');
+      if (row && row.dataset.heatno) {
+        loadHeatFromLog(row.dataset.heatno);
+      }
+    });
+  }
 }
 
-function updateFurnaceMonitor(heats) {
-  // Group by furnace, sum tap_wt, show alerts
-  const furnaceTotals = {};
-  heats.forEach(h => {
-    const fn = (h.furnace_no || '').trim();
-    if (!fn) return;
-    furnaceTotals[fn] = (furnaceTotals[fn] || 0) + (h.tap_wt || 0);
-  });
+async function updateFurnaceMonitor(heats) {
   const mon = document.getElementById('furnace-monitor');
   if (!mon) return;
 
+  // Collect unique furnace numbers
+  const furnaces = [...new Set(heats.map(h => (h.furnace_no||'').trim()).filter(Boolean))];
+  if (!furnaces.length) { mon.style.display = 'none'; return; }
+
+  // Fetch weight for each furnace (accounts for reline resets)
+  const results = await Promise.all(furnaces.map(fn =>
+    fetch('/api/furnace_weight/' + encodeURIComponent(fn)).then(r => r.json())
+  ));
+
   const alerts = [];
-  Object.entries(furnaceTotals).forEach(([fn, kg]) => {
-    const t = kg / 1000;
-    if (t >= 200) {
-      alerts.push('<span style="color:#b91c1c;font-weight:700">🚨 ' + fn + ': ' + t.toFixed(1) + 'T — MUST RELINE NOW!</span>');
-    } else if (t >= 180) {
-      alerts.push('<span style="color:#d97706;font-weight:700">⚠ ' + fn + ': ' + t.toFixed(1) + 'T — Reline approaching (200T)</span>');
+  results.forEach(d => {
+    if (!d.furnace_no) return;
+    const fn = d.furnace_no;
+    const t  = d.total_tonnes;
+    const lastReline = d.last_reline !== 'Never' ? ' (relined ' + d.last_reline + ')' : '';
+
+    if (d.critical) {
+      var span = '<span style="color:#b91c1c;font-weight:700">🚨 ' + fn + ': ' + t.toFixed(1) + 'T — MUST RELINE NOW' + lr + '</span>';
+      var btn  = '<button data-fn="' + fn + '" onclick="markReliningDone(this.dataset.fn)" style="font-size:11px;padding:2px 8px;background:#b91c1c;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:6px">✓ Mark Relined</button>';
+      alerts.push(span + btn);
+    } else if (d.warn) {
+      var span = '<span style="color:#d97706;font-weight:700">⚠ ' + fn + ': ' + t.toFixed(1) + 'T — Approaching (' + rem + 'T left)' + lr + '</span>';
+      var btn  = '<button data-fn="' + fn + '" onclick="markReliningDone(this.dataset.fn)" style="font-size:11px;padding:2px 8px;background:#d97706;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:6px">✓ Mark Relined</button>';
+      alerts.push(span + btn);
     }
   });
 
   if (alerts.length) {
-    mon.innerHTML = alerts.join('  &nbsp;|&nbsp;  ');
-    mon.style.display = '';
-    mon.style.background = 'var(--warn-bg)';
-    mon.style.color = 'var(--warn)';
-    mon.style.padding = '5px 12px';
-    mon.style.borderRadius = 'var(--radius)';
-    mon.style.fontSize = '12px';
+    mon.innerHTML = alerts.join('<span style="margin:0 6px;color:#aaa">|</span>');
+    mon.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:6px 12px;border-radius:var(--radius);background:#fef3c7;font-size:12px;border:1px solid #f59e0b';
   } else {
-    mon.style.display = 'none';
+    // Show all furnaces with weight summary when no alert
+    const summaries = results.map(d =>
+      d.furnace_no + ': ' + d.total_tonnes.toFixed(1) + 'T (' + d.remaining.toFixed(0) + 'T to reline)'
+    );
+    mon.innerHTML = '🔥 ' + summaries.join('  &nbsp;|&nbsp;  ');
+    mon.style.cssText = 'display:block;padding:4px 12px;border-radius:var(--radius);background:#f0f9ff;font-size:11px;color:#0369a1;border:1px solid #bae6fd';
   }
 }
 
-function renderHeatTable(heats) {
+async function markReliningDone(furnaceNo) {
+  if (!confirm('Mark furnace ' + furnaceNo + ' as RELINED? This resets the weight counter to 0.')) return;
+  try {
+    const res = await fetch('/api/furnace_reline', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ furnace_no: furnaceNo }),
+    });
+    const d = await res.json();
+    if (d.status === 'relined') {
+      showToast('Furnace ' + furnaceNo + ' marked as relined on ' + d.date, 'success');
+      await loadHeatLog();   // refresh heat log + monitor
+    } else {
+      showToast('Error: ' + (d.error||'unknown'), 'error');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+function renderHeatTable(heats, trimCounts) {
+  trimCounts = trimCounts || {};
   const tbody = document.getElementById('heats-body');
   if (!heats.length) {
     tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:24px">No heats saved yet.</td></tr>';
     return;
   }
+  // Build rows, attach click handler via event delegation (avoids all quoting issues)
   tbody.innerHTML = heats.map(function(h) {
-    return '<tr>'
-      + '<td><a href="#" class="heat-no-link" style="color:var(--accent);text-decoration:none;font-weight:600" '
-      + 'onclick="loadHeatFromLog(' + JSON.stringify(h.heat_no) + ');return false;">'
-      + (h.heat_no||'') + '</a></td>'
+    var tc = trimCounts[h.heat_no] || 0;
+    var trimBadge = tc > 0
+      ? '<span style="background:var(--accent);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px;cursor:pointer;margin-left:4px" '
+        + 'data-hn="' + (h.heat_no||'') + '" onclick="event.stopPropagation();viewTrimsForHeat(this.dataset.hn)" '
+        + 'title="' + tc + ' trim record(s) — click to view">' + tc + ' trim</span>'
+      : '';
+    return '<tr data-heatno="' + (h.heat_no||'').replace(/"/g,'&quot;') + '" class="heat-log-row" style="cursor:pointer" title="Click to load into Calculator">'
+      + '<td style="color:var(--accent);font-weight:600;text-decoration:underline">' + (h.heat_no||'') + trimBadge + '</td>'
       + '<td>' + (h.melt_date||'—') + '</td>'
       + '<td>' + (h.grade_code||'') + ' — ' + (h.grade_name||'') + '</td>'
       + '<td>' + (h.furnace_no||'—') + '</td>'
@@ -860,6 +910,8 @@ function renderHeatTable(heats) {
       + '<td class="num-col">' + (h.Mo||0).toFixed(2) + '</td>'
       + '</tr>';
   }).join('');
+
+  // Click handled by persistent event listener set up in loadHeatLog()
 }
 
 function filterHeats() {
@@ -868,7 +920,21 @@ function filterHeats() {
     (h.heat_no||'').toLowerCase().includes(q) ||
     (h.grade_name||'').toLowerCase().includes(q) ||
     (h.grade_code||'').toLowerCase().includes(q));
-  renderHeatTable(filtered);
+  const tc = {};
+  allTrimRecords.forEach(t => { if (t.heat_no) tc[t.heat_no] = (tc[t.heat_no]||0)+1; });
+  renderHeatTable(filtered, tc);
+}
+
+async function viewTrimsForHeat(heatNo) {
+  document.querySelectorAll('.section').forEach(s => s.style.display = 'none');
+  document.getElementById('trim-log').style.display = '';
+  document.querySelectorAll('.nav-btn').forEach(b => {
+    b.classList.remove('active');
+    if (b.textContent.trim() === 'Trim Log') b.classList.add('active');
+  });
+  await loadTrimLog();
+  const si = document.getElementById('trim-log-search');
+  if (si) { si.value = heatNo; filterTrimLog(); }
 }
 
 async function loadHeatFromLog(heatNo) {
@@ -879,8 +945,14 @@ async function loadHeatFromLog(heatNo) {
     const h = await res.json();
 
     // Switch to calculator tab
-    const calcBtn = document.querySelector('.nav-btn.active');
-    showSection('calculator', document.querySelector('[onclick*="calculator"]'));
+    // First hide all sections + remove active from all nav btns manually
+    document.querySelectorAll('.section').forEach(s => s.style.display = 'none');
+    const calcSection = document.getElementById('calculator');
+    if (calcSection) calcSection.style.display = '';
+    document.querySelectorAll('.nav-btn').forEach(b => {
+      b.classList.remove('active');
+      if (b.textContent.trim() === 'Calculator') b.classList.add('active');
+    });
 
     // Populate heat info fields
     document.getElementById('furnace-no').value = h.furnace_no || '';
@@ -1044,11 +1116,10 @@ async function openPrintReport() {
     tapSplits.push({ weight: Math.max(0, wt), temp: pourTemp, ladle: ladle });
   }
 
-  // Pour temp entered by user = pour temp in UI
-  // Report "Pour Temp" label = what user typed (pour temp)
-  // Report "Tap Temp" label  = pour temp - 50 (reverse of old logic)
-  const reportPourTemp = argonPurging ? pourTemp + 30 : pourTemp;
-
+  // Rules:
+  //   pour_temp  = exactly what user typed in "Pour Temperature" field
+  //   tap_temp (report) = pour_temp + 50
+  //   If argon purging: add another +30 to both pour and tap in report
   const heatNo = document.getElementById('heat-no').value;
 
   const payload = {
@@ -1060,14 +1131,14 @@ async function openPrintReport() {
     })),
     tap_splits:  tapSplits,
     heat_info: {
-      furnace_no:       document.getElementById('furnace-no').value,
-      heat_no:          heatNo,
-      operator:         document.getElementById('operator').value,
-      ladle:            ladle,
-      pour_temp:        reportPourTemp,    // what user entered (+ argon if active)
-      argon_purging:    argonPurging,
-      melt_date:        new Date().toISOString().split('T')[0],
-      mpn:              '',
+      furnace_no:    document.getElementById('furnace-no').value,
+      heat_no:       heatNo,
+      operator:      document.getElementById('operator').value,
+      ladle:         ladle,
+      pour_temp:     pourTemp,      // raw value from UI, no adjustments here
+      argon_purging: argonPurging,  // report applies +30 at render time
+      melt_date:     new Date().toISOString().split('T')[0],
+      mpn:           '',
     },
   };
 
@@ -1078,8 +1149,8 @@ async function openPrintReport() {
     });
     const data = await res.json();
     if (data.token) {
-      // Open with save=1 so server writes to heat_pdf/
-      window.open('/print_report?token=' + data.token + '&save=1', '_blank');
+      // Open report — autoprint=1 triggers print dialog automatically
+      window.open('/print_report?token=' + data.token + '&autoprint=1', '_blank');
     } else {
       showToast('Failed to prepare report.', 'error');
     }
@@ -1265,6 +1336,246 @@ async function reloadData(btn) {
   }
   btn.textContent = origText;
   btn.classList.remove('spinning');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TRIM LOG  (FK = heat_no)
+═══════════════════════════════════════════════════════════════ */
+
+async function onTrimHeatNoChange(val) {
+  const info = document.getElementById('trim-heat-info');
+  if (!val || !val.trim()) { info.style.display = 'none'; return; }
+  try {
+    const res = await fetch('/api/heats/' + encodeURIComponent(val.trim()));
+    if (!res.ok) { info.style.display = 'none'; return; }
+    const h = await res.json();
+    info.style.display = '';
+    info.innerHTML = '🔗 Linked: <strong>' + h.heat_no + '</strong> — '
+      + h.grade_code + ' ' + h.grade_name
+      + ' | Furnace: ' + (h.furnace_no||'—')
+      + ' | Tap Wt: ' + (h.tap_wt||0) + ' kg';
+    // Auto-fill furnace no and operator from linked heat
+    if (h.furnace_no) document.getElementById('trim-furnace-no').value = h.furnace_no;
+    if (h.operator)   document.getElementById('trim-operator').value   = h.operator;
+    // Auto-fill grade if not already selected
+    if (!trimGrade && h.grade_code) {
+      const g = grades.find(x => x.code === h.grade_code);
+      if (g) {
+        document.getElementById('trim-grade-select').value = h.grade_code;
+        document.getElementById('trim-grade-search-input').value = h.grade_code + ' — ' + h.grade_name;
+        trimGrade = g;
+        const block = document.getElementById('trim-aim-block');
+        if (block) block.style.display = '';
+        renderChemCells('trim-aim-cells', ELEMENTS.map(el => ({ el, value: g[el]||0, status:'' })));
+      }
+    }
+  } catch(e) { info.style.display = 'none'; }
+}
+
+async function saveTrim() {
+  if (!trimGrade) { showToast('Select a grade first.', 'error'); return; }
+  if (!window._lastTrimData) { showToast('Run trim calculation first.', 'error'); return; }
+
+  const data = window._lastTrimData;
+  const heatNo    = (document.getElementById('trim-heat-no')?.value || '').trim();
+  const furnaceNo = (document.getElementById('trim-furnace-no')?.value || '').trim();
+  const operator  = (document.getElementById('trim-operator')?.value || '').trim();
+  const furnaceKg = parseFloat(document.getElementById('trim-furnace-kg').value) || 0;
+
+  const spectro = {};
+  ELEMENTS.forEach(el => {
+    spectro[el] = parseFloat(document.getElementById('spectro-' + el).value) || 0;
+  });
+
+  // Summarise trim additions as a readable string
+  const addSummary = (data.trim_needed || [])
+    .map(t => t.addition_code + ':' + t.addition_kg.toFixed(2) + 'kg')
+    .join(', ') || 'None';
+
+  const proj = data.projected_pct || {};
+
+  const payload = {
+    heat_no:    heatNo || null,
+    furnace_no: furnaceNo,
+    operator:   operator,
+    grade_code: trimGrade.code,
+    grade_name: trimGrade.description,
+    furnace_kg: furnaceKg,
+    trim_date:  new Date().toISOString().split('T')[0],
+    // Spectro readings
+    spec_C:  spectro.C  || 0,  spec_Si: spectro.Si || 0,
+    spec_Mn: spectro.Mn || 0,  spec_Cr: spectro.Cr || 0,
+    spec_Ni: spectro.Ni || 0,  spec_Mo: spectro.Mo || 0,
+    spec_Cu: spectro.Cu || 0,  spec_S:  spectro.S  || 0,
+    spec_P:  spectro.P  || 0,
+    // Projected after trim
+    proj_C:  proj.C  || 0,  proj_Si: proj.Si || 0,
+    proj_Mn: proj.Mn || 0,  proj_Cr: proj.Cr || 0,
+    proj_Ni: proj.Ni || 0,  proj_Mo: proj.Mo || 0,
+    // Summary
+    total_trim_kg:   data.total_trim_kg   || 0,
+    total_trim_cost: data.total_trim_cost || 0,
+    trim_additions:  addSummary,
+    status: 'saved',
+  };
+
+  try {
+    const res  = await fetch('/api/trims', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await res.json();
+    if (d.error) {
+      showTrimSaveMsg('Error: ' + d.error, false);
+      return;
+    }
+    showTrimSaveMsg('✓ Saved as ' + d.trim_id + (heatNo ? ' (linked to heat ' + heatNo + ')' : ''), true);
+    showToast('Trim record saved: ' + d.trim_id, 'success');
+  } catch(e) {
+    showTrimSaveMsg('Error: ' + e.message, false);
+  }
+}
+
+function showTrimSaveMsg(msg, ok) {
+  const el = document.getElementById('trim-save-msg');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.cssText = ok
+    ? 'display:block;color:var(--success);background:var(--success-bg);padding:6px 10px;border-radius:var(--radius)'
+    : 'display:block;color:var(--danger);background:var(--danger-bg);padding:6px 10px;border-radius:var(--radius)';
+  if (ok) setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+async function loadTrimLog() {
+  const res = await fetch('/api/trims');
+  allTrimRecords = await res.json();
+  renderTrimLog(allTrimRecords);
+}
+
+function renderTrimLog(records) {
+  const tbody = document.getElementById('trim-log-body');
+  if (!tbody) return;
+  if (!records || !records.length) {
+    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--text2);padding:24px">No trim records saved yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = records.map(function(t) {
+    const linked = t.heat_no
+      ? '<a href="#" style="color:var(--accent);font-weight:600" '
+        + 'onclick="event.preventDefault();goToHeatFromTrim(' + JSON.stringify(t.heat_no) + ')">'
+        + t.heat_no + '</a>'
+      : '<span style="color:var(--text3)">—</span>';
+    return '<tr class="trim-log-row" style="cursor:pointer" data-trimid="' + t.trim_id + '">'
+      + '<td style="font-weight:600;color:var(--accent)">' + t.trim_id + '</td>'
+      + '<td>' + linked + '</td>'
+      + '<td>' + (t.trim_date||'—') + '</td>'
+      + '<td>' + (t.grade_code||'') + ' ' + (t.grade_name||'') + '</td>'
+      + '<td>' + (t.furnace_no||'—') + '</td>'
+      + '<td class="num-col">' + (t.furnace_kg||0).toLocaleString() + ' kg</td>'
+      + '<td class="num-col">' + (t.spec_C||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.spec_Cr||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.spec_Ni||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.proj_C||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.proj_Cr||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.proj_Ni||0).toFixed(3) + '</td>'
+      + '<td class="num-col">' + (t.total_trim_kg||0).toFixed(2) + ' kg</td>'
+      + '<td class="num-col">$' + (t.total_trim_cost||0).toFixed(2) + '</td>'
+      + '</tr>';
+  }).join('');
+
+  // Click row to show detail
+  tbody.onclick = null;
+  tbody.addEventListener('click', function(e) {
+    // Only expand if not clicking the FK heat link
+    if (e.target.tagName === 'A') return;
+    const row = e.target.closest('tr[data-trimid]');
+    if (row) showTrimDetail(row.dataset.trimid);
+  });
+}
+
+function filterTrimLog() {
+  const q = (document.getElementById('trim-log-search').value || '').toLowerCase();
+  const filtered = allTrimRecords.filter(t =>
+    (t.trim_id||'').toLowerCase().includes(q) ||
+    (t.heat_no||'').toLowerCase().includes(q) ||
+    (t.grade_code||'').toLowerCase().includes(q) ||
+    (t.grade_name||'').toLowerCase().includes(q)
+  );
+  renderTrimLog(filtered);
+}
+
+function showTrimDetail(trimId) {
+  const t = allTrimRecords.find(x => x.trim_id === trimId);
+  if (!t) return;
+  const panel  = document.getElementById('trim-detail-panel');
+  const title  = document.getElementById('trim-detail-title');
+  const content = document.getElementById('trim-detail-content');
+  if (!panel) return;
+  title.textContent = 'Trim Detail — ' + trimId;
+
+  const heatLink = t.heat_no
+    ? '<a href="#" style="color:var(--accent)" onclick="event.preventDefault();goToHeatFromTrim(' + JSON.stringify(t.heat_no) + ')">' + t.heat_no + ' ↗</a>'
+    : '—';
+
+  content.innerHTML = [
+    '<div class="form-grid-3" style="gap:6px;margin-bottom:12px">',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">TRIM ID</div><div style="font-weight:700">' + t.trim_id + '</div></div>',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">HEAT NO. (FK)</div><div>' + heatLink + '</div></div>',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">DATE</div><div>' + (t.trim_date||'—') + '</div></div>',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">GRADE</div><div>' + t.grade_code + ' — ' + t.grade_name + '</div></div>',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">FURNACE</div><div>' + (t.furnace_no||'—') + '</div></div>',
+      '<div><div style="font-size:11px;color:var(--text3);font-weight:600">FURNACE WT</div><div>' + (t.furnace_kg||0).toLocaleString() + ' kg</div></div>',
+    '</div>',
+    '<div style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:10px">',
+      '<div style="background:var(--bg);padding:4px 10px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Spectro vs Aim vs Projected (%)</div>',
+      '<table class="data-table" style="font-size:12px">',
+        '<thead><tr><th>Row</th>',
+        ['C','Si','Mn','Cr','Ni','Mo'].map(e => '<th class="num-col">' + e + '</th>').join(''),
+        '</tr></thead><tbody>',
+        '<tr><td style="font-weight:600;color:var(--text2)">Spectro</td>',
+        ['C','Si','Mn','Cr','Ni','Mo'].map(e => '<td class="num-col">' + (t['spec_'+e]||0).toFixed(3) + '</td>').join(''),
+        '</tr>',
+        '<tr><td style="font-weight:600;color:var(--success)">Projected</td>',
+        ['C','Si','Mn','Cr','Ni','Mo'].map(e => '<td class="num-col">' + (t['proj_'+e]||0).toFixed(3) + '</td>').join(''),
+        '</tr>',
+      '</tbody></table>',
+    '</div>',
+    '<div style="font-size:13px;margin-bottom:4px"><strong>Trim additions:</strong> ' + (t.trim_additions||'None') + '</div>',
+    '<div style="font-size:13px"><strong>Total:</strong> ' + (t.total_trim_kg||0).toFixed(2) + ' kg &nbsp;|&nbsp; $' + (t.total_trim_cost||0).toFixed(2) + '</div>',
+  ].join('');
+
+  panel.style.display = '';
+  panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeTrimDetail() {
+  const panel = document.getElementById('trim-detail-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+async function goToHeatFromTrim(heatNo) {
+  // Navigate to Heat Log and show the linked heat
+  const allNavBtns = document.querySelectorAll('.nav-btn');
+  document.querySelectorAll('.section').forEach(s => s.style.display = 'none');
+  document.getElementById('heat-log').style.display = '';
+  allNavBtns.forEach(b => {
+    b.classList.remove('active');
+    if (b.textContent.trim() === 'Heat Log') b.classList.add('active');
+  });
+  await loadHeatLog();
+  // Highlight the row
+  setTimeout(() => {
+    const tbody = document.getElementById('heats-body');
+    if (!tbody) return;
+    const rows = tbody.querySelectorAll('tr[data-heatno]');
+    rows.forEach(row => {
+      if (row.dataset.heatno === heatNo) {
+        row.style.background = 'var(--accent-bg)';
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => { row.style.background = ''; }, 3000);
+      }
+    });
+  }, 400);
 }
 
 /* ═══════════════════════════════════════════════════════════════

@@ -364,23 +364,102 @@ def api_check_heat_no(heat_no):
     exists = db.get_heat(unquote(heat_no)) is not None
     return jsonify({'exists': exists})
 
-@app.route('/api/furnace_weight/<furnace_no>', methods=['GET'])
-def api_furnace_weight(furnace_no):
-    """Sum of tap weights for a furnace — for relining monitor."""
+# furnace_weight route replaced by api_furnace_weight_v2 above
+
+# ── API: Trim log ─────────────────────────────────────────────────────────────
+
+@app.route('/api/trims', methods=['GET'])
+def api_get_trims():
+    """Return all trim records, or filter by heat_no FK."""
+    heat_no = request.args.get('heat_no', None)
+    return jsonify(db.get_trims(heat_no=heat_no))
+
+@app.route('/api/trims', methods=['POST'])
+def api_save_trim():
+    """Save a trim record linked to a heat (heat_no = FK)."""
+    data = request.json
+    try:
+        trim_id = db.save_trim(data)
+        return jsonify({'status': 'saved', 'trim_id': trim_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/trims/<heat_no>', methods=['GET'])
+def api_get_trims_for_heat(heat_no):
+    """Return all trim records for a specific heat number."""
     from urllib.parse import unquote
-    fn = unquote(furnace_no).strip()
-    heats = [h for h in db.get_heats() if h.get('furnace_no','').strip() == fn]
+    return jsonify(db.get_trims(heat_no=unquote(heat_no)))
+
+
+# ── API: Furnace relining management ─────────────────────────────────────────
+# Relining resets the heat count for a furnace — stored in data/reline_log.csv
+
+def _get_reline_dates():
+    """Load furnace -> last_reline_date map from data/reline_log.csv."""
+    p = Path(__file__).parent / 'data' / 'reline_log.csv'
+    if not p.exists():
+        return {}
+    import csv as _csv
+    result = {}
+    with open(p, newline='', encoding='utf-8') as f:
+        for row in _csv.DictReader(f):
+            fn   = row.get('furnace_no','').strip()
+            date = row.get('reline_date','').strip()
+            if fn:
+                result[fn] = date   # last entry wins
+    return result
+
+def _save_reline(furnace_no: str, date_str: str):
+    import csv as _csv
+    p = Path(__file__).parent / 'data' / 'reline_log.csv'
+    file_exists = p.exists()
+    with open(p, 'a', newline='', encoding='utf-8') as f:
+        w = _csv.DictWriter(f, fieldnames=['furnace_no','reline_date','recorded_by'])
+        if not file_exists:
+            w.writeheader()
+        w.writerow({'furnace_no': furnace_no, 'reline_date': date_str, 'recorded_by': 'user'})
+
+@app.route('/api/furnace_reline', methods=['POST'])
+def api_furnace_reline():
+    """Record that a furnace has been relined. Resets the heat weight counter."""
+    data       = request.json
+    furnace_no = data.get('furnace_no','').strip()
+    if not furnace_no:
+        return jsonify({'error': 'furnace_no required'}), 400
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    _save_reline(furnace_no, date_str)
+    return jsonify({'status': 'relined', 'furnace_no': furnace_no, 'date': date_str})
+
+@app.route('/api/furnace_weight/<furnace_no>', methods=['GET'])
+def api_furnace_weight_v2(furnace_no):
+    """Sum of tap weights since last reline for a furnace."""
+    from urllib.parse import unquote
+    fn          = unquote(furnace_no).strip()
+    reline_dates = _get_reline_dates()
+    last_reline  = reline_dates.get(fn)   # 'YYYY-MM-DD' or None
+
+    # Only count heats AFTER the last reline date (strictly after, not same day)
+    all_heats = db.get_heats()
+    if last_reline:
+        heats = [h for h in all_heats
+                 if h.get('furnace_no','').strip() == fn
+                 and (h.get('melt_date','') or '') > last_reline]
+    else:
+        heats = [h for h in all_heats if h.get('furnace_no','').strip() == fn]
+
     total_tonnes = sum(h.get('tap_wt', 0) for h in heats) / 1000.0
-    RELINE_WARN    = 180   # tonnes — alert
-    RELINE_LIMIT   = 200   # tonnes — must reline
+    RELINE_WARN  = 180
+    RELINE_LIMIT = 200
     return jsonify({
-        'furnace_no':    fn,
-        'heat_count':    len(heats),
-        'total_tonnes':  round(total_tonnes, 2),
-        'warn':          total_tonnes >= RELINE_WARN,
-        'critical':      total_tonnes >= RELINE_LIMIT,
-        'remaining':     round(max(0, RELINE_LIMIT - total_tonnes), 2),
+        'furnace_no':   fn,
+        'heat_count':   len(heats),
+        'total_tonnes': round(total_tonnes, 2),
+        'last_reline':  last_reline or 'Never',
+        'warn':         total_tonnes >= RELINE_WARN,
+        'critical':     total_tonnes >= RELINE_LIMIT,
+        'remaining':    round(max(0, RELINE_LIMIT - total_tonnes), 2),
     })
+
 
 # ── PDF save (Trim + Heat reports) ───────────────────────────────────────────
 # These save an HTML file to a local folder, then the browser triggers print-to-PDF
@@ -539,7 +618,7 @@ def api_prepare_report():
     # Report shows "Tap Temp"  = pour_temp - 50  (tap happens before pour)
     pour_temp = float(heat_info.get('pour_temp', heat_info.get('tap_temp', 1550)))
     heat_info['pour_temp']     = pour_temp
-    heat_info['tap_temp_calc'] = pour_temp + 50   # tap temp = pour - 50
+    heat_info['tap_temp_calc'] = pour_temp - 50   # tap temp = pour - 50
 
     report_data = {
         'tap_type': tap_type, 'n_taps': n_taps, 'tap_splits': tap_splits,

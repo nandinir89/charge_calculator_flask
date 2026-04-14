@@ -145,8 +145,11 @@ html, body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: 
 <div class="toolbar">
   <button class="btn-back" onclick="history.back()">← Back</button>
   <span class="lbl" id="rpt-lbl">Furnace Charge Report</span>
-  <div class="tright">
-    <button class="btn-print" onclick="window.print()">🖨&nbsp; Print / Save PDF</button>
+  <div class="tright" style="display:flex;align-items:center;gap:8px">
+    <span id="saved-path-note" style="font-size:11px;color:#86efac;display:none"></span>
+    <button class="btn-print" onclick="window.print()" style="background:#16a34a;font-size:13px;padding:6px 16px">
+      🖨 &nbsp;Save as PDF &nbsp;<span style="font-size:10px;opacity:.8">(browser print → Save as PDF)</span>
+    </button>
   </div>
 </div>
 
@@ -164,12 +167,17 @@ window.addEventListener('load', () => {
       '<div style="padding:40px;color:red">No report data. Open from the Calculator page.</div>';
     return;
   }
+
+  // Show saved file path in toolbar
   if (D._saved_file) {
     const note = document.createElement('div');
-    note.style.cssText = 'background:#d1fae5;color:#065f46;padding:6px 14px;font-size:12px;text-align:center;border-bottom:1px solid #86efac';
-    note.textContent = '💾 Saved to: ' + D._saved_file;
-    document.body.insertBefore(note, document.body.firstChild);
+    note.style.cssText = 'background:#d1fae5;color:#065f46;padding:5px 14px;font-size:12px;text-align:center;border-bottom:1px solid #86efac';
+    note.innerHTML = '💾 Saved: <strong>' + D._saved_file + '</strong>';
+    document.body.insertBefore(note, document.querySelector('.wrapper'));
+    const toolbarNote = document.getElementById('saved-path-note');
+    if (toolbarNote) { toolbarNote.textContent = '💾 ' + D._saved_file; toolbarNote.style.display = ''; }
   }
+
   if (D.report_type === 'trim') {
     document.getElementById('rpt-lbl').textContent =
       'Trim Report — ' + D.grade_description + ' (' + D.grade_code + ')';
@@ -179,21 +187,28 @@ window.addEventListener('load', () => {
       D.grade_description + ' (' + D.grade_code + ') — ' + tapLabel();
     render();
   }
+
+  // After render, automatically open print dialog
+  // Use setTimeout to ensure the DOM is fully painted first
+  if (new URLSearchParams(window.location.search).get('autoprint') === '1') {
+    setTimeout(() => window.print(), 800);
+  }
 });
 
 function tapLabel() {
   return {1:'Single Tap', 2:'Double Tap', 3:'Triple Tap'}[D.n_taps] || 'Single Tap';
 }
 
-// In UI: user enters "Pour Temperature"
-// In report: "Pour Temp" = user entry, "Tap Temp" = pour - 50
-function tapFromPour(p) {
-  const n = parseFloat(p);
-  return isNaN(n) ? '' : (n + 50);
+// Temperature rules:
+//   User enters:  Pour Temperature  (e.g. 1550°C)
+//   Report shows: Pour Temp = pour_temp + 30 if argon else pour_temp
+//                 Tap Temp  = Pour Temp + 50
+function getDisplayPour(rawPour, isArgon) {
+  const n = parseFloat(rawPour) || 0;
+  return isArgon ? n + 30 : n;
 }
-// Keep pourTemp as identity for per-tap display
-function pourTemp(t) {
-  return parseFloat(t) || '';
+function getDisplayTap(rawPour, isArgon) {
+  return getDisplayPour(rawPour, isArgon) + 50;
 }
 
 function fmtC(v) {
@@ -213,7 +228,7 @@ function render() {
   <div class="ph">
     <div class="ph-l">
       <div class="ph-title">FURNACE CHARGE CALCULATOR</div>
-      <div class="ph-sub">${tl} &nbsp;|&nbsp; ${D.grade_description} (${D.grade_code}) &nbsp;|&nbsp; ${D.total_tonnes} t &nbsp;|&nbsp; Pour: ${D.heat_info.pour_temp||''} °C</div>
+      <div class="ph-sub">${tl} &nbsp;|&nbsp; ${D.grade_description} (${D.grade_code}) &nbsp;|&nbsp; ${D.total_tonnes} t &nbsp;|&nbsp; Pour: ${getDisplayPour(D.heat_info.pour_temp,D.heat_info.argon_purging)} °C</div>
     </div>
     <div class="ph-r">
       <div class="mrow"><span class="mlbl">Date:</span><span class="mval">${hi.melt_date||''}</span></div>
@@ -228,20 +243,22 @@ function render() {
     <div class="ic"><div class="ic-l">Metal Grade</div><div class="ic-v"><strong>${D.grade_description}</strong></div></div>
     <div class="ic"><div class="ic-l">Grade Code</div><div class="ic-v">${D.grade_code}</div></div>
     <div class="ic"><div class="ic-l">Total Tap Wt.</div><div class="ic-v"><strong>${D.tap_weight.toLocaleString()} kg</strong></div></div>
-    <div class="ic"><div class="ic-l">Pour Temp.</div><div class="ic-v"><strong>${hi.pour_temp||''} °C</strong>${hi.argon_purging ? ' <span style="background:#dbeafe;color:#1d4ed8;font-size:6pt;font-weight:700;padding:1px 4px;border-radius:3px">ARGON</span>':''}</div></div>
-    <div class="ic"><div class="ic-l">Tap Temp.</div><div class="ic-v">${tapFromPour(hi.pour_temp)} °C</div></div>
+    <div class="ic"><div class="ic-l">Pour Temp.</div><div class="ic-v"><strong>${getDisplayPour(hi.pour_temp,hi.argon_purging)} °C</strong>${hi.argon_purging ? ' <span style="background:#dbeafe;color:#1d4ed8;font-size:6pt;font-weight:700;padding:1px 4px;border-radius:3px">ARGON+30</span>':''}</div></div>
+    <div class="ic"><div class="ic-l">Tap Temp.</div><div class="ic-v"><strong>${getDisplayTap(hi.pour_temp,hi.argon_purging)} °C</strong></div></div>
     <div class="ic"><div class="ic-l">Operator</div><div class="ic-v">${hi.operator||''}</div></div>
   </div>`;
 
   /* ── PER-TAP BAR (double/triple only) ───────────── */
   if (D.n_taps > 1 && sp.length > 0) {
     html += `<div class="tapbar t${D.n_taps}">`;
-    sp.forEach((s, i) => {
-      const pTemp = hi.argon_purging ? s.temp + 30 : s.temp;
-      html += `
-        <div class="tbc"><div class="tbl">Tap ${i+1} Weight</div><div><strong>${s.weight} kg</strong></div></div>
-        <div class="tbc"><div class="tbl">Tap ${i+1} Pour Temp.</div><div><strong>${pTemp} °C</strong>${hi.argon_purging ? ' <span style=\'background:#dbeafe;color:#1d4ed8;font-size:6pt;font-weight:700;padding:1px 4px;border-radius:3px\'>ARGON</span>':''}</div></div>
-        <div class="tbc"><div class="tbl">Tap ${i+1} Tap Temp.</div><div>${tapFromPour(pTemp)} °C</div></div>`;
+        sp.forEach((s, i) => {
+      const dispPour = getDisplayPour(s.temp, hi.argon_purging);
+      const dispTap  = getDisplayTap(s.temp, hi.argon_purging);
+      html += '<div class="tbc"><div class="tbl">Tap ' + (i+1) + ' Weight</div><div><strong>' + s.weight + ' kg</strong></div></div>'
+        + '<div class="tbc"><div class="tbl">Tap ' + (i+1) + ' Pour Temp.</div><div><strong>' + dispPour + ' °C</strong>'
+        + (hi.argon_purging ? ' <span style="background:#dbeafe;color:#1d4ed8;font-size:6pt;font-weight:700;padding:1px 4px;border-radius:3px">ARGON+30</span>' : '')
+        + '</div></div>'
+        + '<div class="tbc"><div class="tbl">Tap ' + (i+1) + ' Tap Temp.</div><div><strong>' + dispTap + ' °C</strong></div></div>';
     });
     html += `</div>`;
   }
@@ -422,7 +439,7 @@ function render() {
         const tonne = s.weight / 1000;
         html += `
         <div class="ladle-tap-box">
-          <div class="ladle-tap-hdr">Tap ${i+1} — ${s.weight.toLocaleString()} kg @ Pour: ${hi.argon_purging ? s.temp+30 : s.temp} °C &nbsp;|&nbsp; Ladle: ${s.ladle}</div>
+          <div class="ladle-tap-hdr">Tap ${i+1} — ${s.weight.toLocaleString()} kg @ Pour: ${getDisplayPour(s.temp,hi.argon_purging)} °C &nbsp;|&nbsp; Tap: ${getDisplayTap(s.temp,hi.argon_purging)} °C &nbsp;|&nbsp; Ladle: ${s.ladle}</div>
           <table class="ltbl">
             <thead><tr>
               <th>Additive</th><th>Loc.</th>

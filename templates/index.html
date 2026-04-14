@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Furnace Charge Calculator</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
 
@@ -17,6 +17,7 @@
     <button class="nav-btn active" onclick="showSection('calculator',this)">Calculator</button>
     <button class="nav-btn" onclick="showSection('trim-correction',this)">Trim Correction</button>
     <button class="nav-btn" onclick="showSection('heat-log',this)">Heat Log</button>
+    <button class="nav-btn" onclick="showSection('trim-log',this)">Trim Log</button>
     <button class="nav-btn" onclick="showSection('grade-library',this)">Grade Library</button>
     <button class="nav-btn" onclick="showSection('grade-manager',this)">+ Grades</button>
     <button class="nav-btn" onclick="showSection('material-manager',this)">+ Materials</button>
@@ -60,10 +61,10 @@
                 <input type="checkbox" id="argon-purging" onchange="onArgonChange()">
                 <span class="toggle-slider"></span>
               </div>
-              <span>Argon purging <span style="color:var(--text3);font-weight:400;font-size:12px">(adds +30 °C to tap temperature)</span></span>
+              <span>Argon purging <span style="color:var(--text3);font-weight:400;font-size:12px">(adds +30 °C to pour temperature)</span></span>
             </label>
             <div id="argon-info" style="display:none;margin-top:6px;padding:6px 10px;background:var(--accent-bg);border-radius:var(--radius);font-size:12px;color:var(--accent)">
-              ✓ Argon purging active — adjusted tap temperature: <strong id="argon-temp-display">—</strong> °C
+              ✓ Argon purging active — adjusted pour temperature: <strong id="argon-temp-display">—</strong> °C
             </div>
           </div>
         </div>
@@ -184,6 +185,22 @@
 
       <div class="card">
         <h2 class="card-title">Heat reference</h2>
+        <div class="form-grid-3" style="margin-bottom:10px">
+          <div class="field">
+            <label>Heat No. <span style="font-size:10px;color:var(--accent)">← FK links to Heat Log</span></label>
+            <input type="text" id="trim-heat-no" placeholder="e.g. H001" autocomplete="off"
+                   oninput="onTrimHeatNoChange(this.value)">
+            <div id="trim-heat-info" style="display:none;margin-top:4px;padding:4px 8px;background:var(--accent-bg);border-radius:var(--radius);font-size:12px;color:var(--accent)"></div>
+          </div>
+          <div class="field">
+            <label>Furnace No.</label>
+            <input type="text" id="trim-furnace-no" placeholder="e.g. F1">
+          </div>
+          <div class="field">
+            <label>Operator</label>
+            <input type="text" id="trim-operator" placeholder="Name">
+          </div>
+        </div>
         <div class="form-grid-2">
           <div class="field">
             <label>Grade</label>
@@ -197,7 +214,7 @@
             <input type="hidden" id="trim-grade-select">
           </div>
           <div class="field">
-            <label>Weight before tap (kg)</label>
+            <label>Furnace weight after tap (kg)</label>
             <input type="number" id="trim-furnace-kg" value="1000" min="100" max="50000">
           </div>
         </div>
@@ -275,13 +292,16 @@
         </div>
       </div>
 
-      <!-- Trim Print button -->
+      <!-- Trim Save + Print -->
       <div class="card" id="trim-print-card" style="display:none">
         <div class="card-title-row">
-          <h2 class="card-title">Trim Report</h2>
+          <h2 class="card-title">Save &amp; Print Trim</h2>
         </div>
-        <p class="note" style="margin-bottom:10px">Print and save the trim correction report to <code>trim_pdf/</code>.</p>
-        <button class="print-btn" style="width:100%" onclick="printTrimReport()">🖨 Print &amp; Save Trim Report</button>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="save-btn" style="flex:1" onclick="saveTrim()">💾 Save to Trim Log</button>
+          <button class="print-btn" style="flex:1" onclick="printTrimReport()">🖨 Print &amp; Save PDF</button>
+        </div>
+        <div id="trim-save-msg" style="display:none;font-size:12px"></div>
       </div>
 
       <!-- Dilution Calculator -->
@@ -407,6 +427,57 @@
         </thead>
         <tbody id="heats-body"></tbody>
       </table>
+    </div>
+  </div>
+</section>
+
+<!-- TRIM LOG -->
+<section id="trim-log" class="section" style="display:none">
+  <div class="page-header">
+    <h1>Trim Log</h1>
+    <p>All trim correction records — linked to heats via Heat No.</p>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <h2 class="card-title">Saved trim records</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="trim-log-search" placeholder="Search heat / grade…"
+               oninput="filterTrimLog()" style="width:220px">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Trim ID</th>
+            <th>Heat No. <span style="font-size:10px;color:var(--accent)">(FK)</span></th>
+            <th>Date</th>
+            <th>Grade</th>
+            <th>Furnace</th>
+            <th class="num-col">Furnace Wt</th>
+            <th class="num-col">Spectro C%</th>
+            <th class="num-col">Spectro Cr%</th>
+            <th class="num-col">Spectro Ni%</th>
+            <th class="num-col">Proj C%</th>
+            <th class="num-col">Proj Cr%</th>
+            <th class="num-col">Proj Ni%</th>
+            <th class="num-col">Trim Qty</th>
+            <th class="num-col">Trim Cost</th>
+          </tr>
+        </thead>
+        <tbody id="trim-log-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Trim detail panel (shown when a trim row is clicked) -->
+  <div id="trim-detail-panel" style="display:none;margin-top:16px">
+    <div class="card">
+      <div class="card-title-row">
+        <h2 class="card-title" id="trim-detail-title">Trim Detail</h2>
+        <button class="remove-btn" style="width:auto;padding:4px 12px" onclick="closeTrimDetail()">✕ Close</button>
+      </div>
+      <div id="trim-detail-content"></div>
     </div>
   </div>
 </section>
@@ -593,6 +664,6 @@
 
 <!-- Print modal removed — tap count now from heat info card -->
 
-<script src="/js/app.js"></script>
+<script src="/static/js/app.js"></script>
 </body>
 </html>

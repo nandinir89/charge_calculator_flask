@@ -236,6 +236,8 @@ class ExcelDB:
                 heat_no = _ss(row.get('Heat No.',''))
                 if not heat_no:
                     continue
+                # tap_wt: prefer 'Tap Wt' column, fall back to 'Melt Wt. (kg)'
+                tap_wt_val = _sf(row.get('Tap Wt', 0)) or _sf(row.get('Melt Wt. (kg)', 0))
                 heats.append({
                     'melt_date':  _ss(row.get('Melt Date','')),
                     'grade_name': _ss(row.get('Grade Name','')),
@@ -245,6 +247,7 @@ class ExcelDB:
                     'furnace_no': _ss(row.get('F/c No.','')),
                     'heat_no':    heat_no,
                     'ladle':      _ss(row.get('Ladle','')),
+                    'operator':   _ss(row.get('Operator','')),
                     'melt_wt':    _sf(row.get('Melt Wt. (kg)',0)),
                     'C':  _sf(row.get('C',0)),
                     'Si': _sf(row.get('Si',0)),
@@ -256,7 +259,7 @@ class ExcelDB:
                     'Mo': _sf(row.get('Mo',0)),
                     'Cu': _sf(row.get('Cu',0)),
                     'tap_temp': _sf(row.get('Tap Temperature',0)),
-                    'tap_wt':   _sf(row.get('Tap Wt',0)),
+                    'tap_wt':   tap_wt_val,
                     'GRAF': _sf(row.get('GRAF',0)),
                     'FESI': _sf(row.get('FESI',0)),
                     'HCMN': _sf(row.get('HCMN',0)),
@@ -275,7 +278,16 @@ class ExcelDB:
     def save_heat(self, data: dict):
         """Append a heat record to heat_log.csv."""
         csv_path = _path('heat_log.csv')
-        fieldnames = [
+        # Read existing CSV headers so new rows are fully compatible
+        _existing_headers = None
+        if csv_path.exists():
+            with open(csv_path, newline='', encoding='utf-8') as _f:
+                _reader = csv.reader(_f)
+                _first = next(_reader, None)
+                if _first:
+                    _existing_headers = _first
+
+        fieldnames = _existing_headers or [
             'Melt Date','Grade Name','Grade Code','MPN','Description',
             'F/c No.','Heat No.','Ladle','Melt Wt. (kg)',
             'C','Si','Mn','S','P','Cr','Ni','Mo','Cu','Al',
@@ -324,6 +336,118 @@ class ExcelDB:
                 'Ca-Si-Mn':  data.get('Ca-Si-Mn',0),
                 'Operator':  data.get('operator',''),
             })
+
+
+    # ── Trim log (trim_log.csv) ───────────────────────────────────────────────
+
+    def get_trims(self, heat_no: str = None):
+        """Return all trim records, optionally filtered by heat_no (FK)."""
+        csv_path = _path('trim_log.csv')
+        if not csv_path.exists():
+            return []
+
+        trims = []
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                trim_id = _ss(row.get('Trim ID', ''))
+                if not trim_id:
+                    continue
+                # Filter by heat_no if requested
+                if heat_no and _ss(row.get('Heat No.', '')) != heat_no:
+                    continue
+                rec = {
+                    'trim_id':    trim_id,
+                    'heat_no':    _ss(row.get('Heat No.', '')),
+                    'trim_date':  _ss(row.get('Trim Date', '')),
+                    'grade_code': _ss(row.get('Grade Code', '')),
+                    'grade_name': _ss(row.get('Grade Name', '')),
+                    'furnace_no': _ss(row.get('Furnace No.', '')),
+                    'furnace_kg': _sf(row.get('Furnace Wt (kg)', 0)),
+                    'operator':   _ss(row.get('Operator', '')),
+                    # Spectro actuals
+                    'spec_C':  _sf(row.get('Spectro C', 0)),
+                    'spec_Si': _sf(row.get('Spectro Si', 0)),
+                    'spec_Mn': _sf(row.get('Spectro Mn', 0)),
+                    'spec_Cr': _sf(row.get('Spectro Cr', 0)),
+                    'spec_Ni': _sf(row.get('Spectro Ni', 0)),
+                    'spec_Mo': _sf(row.get('Spectro Mo', 0)),
+                    'spec_Cu': _sf(row.get('Spectro Cu', 0)),
+                    'spec_S':  _sf(row.get('Spectro S', 0)),
+                    'spec_P':  _sf(row.get('Spectro P', 0)),
+                    # Projected after trim
+                    'proj_C':  _sf(row.get('Proj C', 0)),
+                    'proj_Si': _sf(row.get('Proj Si', 0)),
+                    'proj_Mn': _sf(row.get('Proj Mn', 0)),
+                    'proj_Cr': _sf(row.get('Proj Cr', 0)),
+                    'proj_Ni': _sf(row.get('Proj Ni', 0)),
+                    'proj_Mo': _sf(row.get('Proj Mo', 0)),
+                    # Additions made
+                    'total_trim_kg':   _sf(row.get('Total Trim Kg', 0)),
+                    'total_trim_cost': _sf(row.get('Total Trim Cost', 0)),
+                    'trim_additions':  _ss(row.get('Trim Additions', '')),
+                    'status':          _ss(row.get('Status', 'saved')),
+                }
+                trims.append(rec)
+        return trims
+
+    def save_trim(self, data: dict):
+        """Append a trim record to trim_log.csv."""
+        csv_path = _path('trim_log.csv')
+        fieldnames = [
+            'Trim ID', 'Heat No.', 'Trim Date', 'Grade Code', 'Grade Name',
+            'Furnace No.', 'Furnace Wt (kg)', 'Operator',
+            'Spectro C', 'Spectro Si', 'Spectro Mn', 'Spectro Cr',
+            'Spectro Ni', 'Spectro Mo', 'Spectro Cu', 'Spectro S', 'Spectro P',
+            'Proj C', 'Proj Si', 'Proj Mn', 'Proj Cr', 'Proj Ni', 'Proj Mo',
+            'Total Trim Kg', 'Total Trim Cost', 'Trim Additions', 'Status',
+        ]
+
+        file_exists = csv_path.exists()
+        # Auto-generate Trim ID: TRM-{YYYYMMDD}-{seq}
+        seq = 1
+        if file_exists:
+            existing = self.get_trims()
+            today = datetime.now().strftime('%Y%m%d')
+            today_trims = [t for t in existing if t['trim_id'].startswith('TRM-' + today)]
+            seq = len(today_trims) + 1
+
+        trim_id = data.get('trim_id') or f'TRM-{datetime.now().strftime("%Y%m%d")}-{seq:03d}'
+
+        with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                'Trim ID':        trim_id,
+                'Heat No.':       data.get('heat_no', ''),
+                'Trim Date':      data.get('trim_date', datetime.now().strftime('%Y-%m-%d')),
+                'Grade Code':     data.get('grade_code', ''),
+                'Grade Name':     data.get('grade_name', ''),
+                'Furnace No.':    data.get('furnace_no', ''),
+                'Furnace Wt (kg)':data.get('furnace_kg', 0),
+                'Operator':       data.get('operator', ''),
+                'Spectro C':  data.get('spec_C', 0),
+                'Spectro Si': data.get('spec_Si', 0),
+                'Spectro Mn': data.get('spec_Mn', 0),
+                'Spectro Cr': data.get('spec_Cr', 0),
+                'Spectro Ni': data.get('spec_Ni', 0),
+                'Spectro Mo': data.get('spec_Mo', 0),
+                'Spectro Cu': data.get('spec_Cu', 0),
+                'Spectro S':  data.get('spec_S', 0),
+                'Spectro P':  data.get('spec_P', 0),
+                'Proj C':  data.get('proj_C', 0),
+                'Proj Si': data.get('proj_Si', 0),
+                'Proj Mn': data.get('proj_Mn', 0),
+                'Proj Cr': data.get('proj_Cr', 0),
+                'Proj Ni': data.get('proj_Ni', 0),
+                'Proj Mo': data.get('proj_Mo', 0),
+                'Total Trim Kg':   data.get('total_trim_kg', 0),
+                'Total Trim Cost': data.get('total_trim_cost', 0),
+                'Trim Additions':  data.get('trim_additions', ''),
+                'Status':          data.get('status', 'saved'),
+            })
+        return trim_id
 
     # ── Material (addition specs) management ─────────────────────────────────
 

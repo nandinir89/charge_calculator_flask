@@ -1,31 +1,8 @@
-# Furnace Charge Calculator — Flask App
+# Furnace Charge Calculator
 
-A web application for induction furnace charge calculation.
-Uses plain CSV files as the database — no Excel install needed.
+A web application for induction furnace charge calculation and heat management.
 
-## Project structure
-
-```
-charge_app/
-├── app.py                  ← Flask routes + calculation logic
-├── db.py                   ← CSV read/write layer (no openpyxl)
-├── desktop_app.py          ← Windows desktop launcher (pywebview)
-├── desktop_app.spec        ← PyInstaller build config
-├── build_windows.bat       ← One-click Windows .exe builder
-├── requirements.txt
-├── data/
-│   ├── metal_specs.csv     ← Grade aim chemistry + deox rates  (EDIT HERE)
-│   ├── addition_specs.csv  ← Scrap & alloy compositions + cost (EDIT HERE)
-│   └── heat_log.csv        ← Saved heat records               (auto-appended)
-├── templates/
-│   ├── index.html
-│   └── print_report.html
-└── static/
-    ├── css/style.css
-    └── js/app.js
-```
-
-## Setup (web mode)
+## Quick Start
 
 ```bash
 pip install flask
@@ -33,39 +10,50 @@ python app.py
 # Open http://localhost:5000
 ```
 
-## Build Windows .exe
+## Project Structure
 
-```bash
-# On a Windows machine:
-build_windows.bat
-# Output: dist\FurnaceCalc\FurnaceCalc.exe
 ```
+charge_app/
+├── index.html            ← Root copy for GitHub Pages
+├── app.py                ← Flask server + all API routes
+├── db.py                 ← CSV read/write layer
+├── data/
+│   ├── metal_specs.csv   ← 182 metal grades + ladle deox rates
+│   ├── addition_specs.csv← 276 scraps & alloys + costs
+│   ├── heat_log.csv      ← Saved heat records
+│   └── reline_log.csv    ← Furnace relining records (auto-created)
+├── templates/
+│   ├── index.html        ← Main app (single page)
+│   └── print_report.html ← Heat & trim print reports
+├── static/
+│   ├── css/style.css
+│   └── js/app.js
+├── heat_pdf/             ← Auto-saved heat reports (auto-created)
+└── trim_pdf/             ← Auto-saved trim reports (auto-created)
+```
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Charge Calculator** | Grade selection, charge materials, alloy additions, chemistry tracking |
+| **Print Report** | Single/Double/Triple tap, auto-saved to heat_pdf/ |
+| **Trim Correction** | Post-spectro trim calc, ladle additions |
+| **Trim Report** | Auto-saved to trim_pdf/ |
+| **Carbon Dilution** | Any-element dilution calc with recovery additions |
+| **Heat Log** | Searchable, clickable heat numbers load to calculator |
+| **Furnace Monitor** | Per-furnace weight sum, 180T warning, 200T reline alert, ✓ Mark Relined button |
+| **Grade Manager** | Add/edit/delete grades |
+| **Materials Manager** | Add/edit/delete scraps & alloys |
+
+## Temperature Logic
+
+| Label | Value |
+|-------|-------|
+| **Pour Temperature** (UI input) | What the operator enters |
+| **Pour Temp** (report) | = Pour entry + 30 if Argon purging |
+| **Tap Temp** (report) | = Pour Temp + 50 |
 
 ## CSV Database
 
-All data lives in the `data/` folder as plain CSV files.
-Open them in Excel, LibreOffice, or Notepad to edit.
-
-| File | Contents | Edit? |
-|------|----------|-------|
-| `metal_specs.csv` | 172 grade aim chemistries + ladle deox rates | ✅ Yes |
-| `addition_specs.csv` | 276 scraps, alloys, costs | ✅ Yes |
-| `heat_log.csv` | Saved heat records | Auto (app writes here) |
-
-**To add a new grade:** open `metal_specs.csv`, add a row with the
-grade description, code, and chemistry values in the correct columns.
-Hit **⟳ Reload** in the app — changes appear immediately.
-
-## API endpoints
-
-| Method | URL | Description |
-|--------|-----|-------------|
-| GET | `/api/grades` | All metal grades |
-| GET | `/api/materials` | All scraps + alloys |
-| POST | `/api/calculate` | Charge calculation |
-| POST | `/api/trim_correction` | Post-spectro trim calc |
-| GET | `/api/ladle_additions/<code>` | Ladle deox additions |
-| POST | `/api/reload` | Clear cache, re-read CSVs |
-| GET/POST | `/api/heats` | Heat log read/write |
-| POST | `/api/prepare_report` | Prepare printable report |
-| GET | `/print_report?token=…` | Render print report |
+All data lives in `data/` as plain CSV — open in Excel or Notepad, hit ⟳ Reload.

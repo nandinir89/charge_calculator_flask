@@ -498,3 +498,8 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
   border-radius: var(--radius); padding: 8px 12px;
   font-size: 13px; color: var(--success);
 }
+
+/* ── Heat log clickable rows ─────────────────────────────────── */
+.heat-log-row:hover { background: var(--accent-bg) !important; }
+.heat-log-row:hover td { color: var(--accent); }
+.heat-log-row td:first-child { color: var(--accent); font-weight: 600; text-decoration: underline; }
